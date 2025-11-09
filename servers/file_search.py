@@ -11,6 +11,15 @@ logger = logging.getLogger("GeminiFileSearchMCP")
 client = genai.Client()
 mcp = FastMCP("Google Gemini File Search")
 
+# --- Helpers -------------------------------------------------------------
+def _get_name(obj):
+    """Return the name field regardless of SDK object type."""
+    if isinstance(obj, str):
+        return obj
+    if isinstance(obj, dict):
+        return obj.get("name") or obj.get("id") or str(obj)
+    return getattr(obj, "name", str(obj))
+
 def _sanitize_name(path: str) -> str:
     base = os.path.splitext(os.path.basename(path))[0].lower()
     safe = re.sub(r"[^a-z0-9-]+", "-", base).strip("-")
@@ -21,7 +30,6 @@ def _safe_mime(path: str) -> str:
     if mime:
         return mime
     ext = os.path.splitext(path)[1].lower()
-    # enforce valid fallback types
     if ext in (".txt", ".log", ".md"): return "text/plain"
     if ext == ".json": return "application/json"
     if ext == ".csv": return "text/csv"
@@ -42,7 +50,7 @@ async def upload_and_index(file_path: str, display_name: str = None) -> str:
     logger.info(f"📂 Uploading {display_name} ({mime_type})")
 
     store = client.file_search_stores.create(config={"display_name": f"store_{int(asyncio.get_event_loop().time())}"})
-    store_name = getattr(store, "name", store)
+    store_name = _get_name(store)
     logger.info(f"🪣 Created FileSearchStore: {store_name}")
 
     op = client.file_search_stores.upload_to_file_search_store(
@@ -57,7 +65,7 @@ async def upload_and_index(file_path: str, display_name: str = None) -> str:
         },
     )
 
-    op_name = getattr(op, "name", op)
+    op_name = _get_name(op)
     for _ in range(60):
         current = client.operations.get(op_name)
         if getattr(current, "done", False):
@@ -85,16 +93,18 @@ async def import_file(file_path: str, display_name: str = None) -> str:
         file=file_path,
         config={"name": safe_name, "display_name": display_name, "mime_type": mime_type},
     )
-    file_name = getattr(sample_file, "name", sample_file)
+    file_name = _get_name(sample_file)
+
     store = client.file_search_stores.create(config={"display_name": display_name})
-    logger.info(f"🪣 Created FileSearchStore: {store.name}")
+    store_name = _get_name(store)
+    logger.info(f"🪣 Created FileSearchStore: {store_name}")
 
     op = client.file_search_stores.import_file(
-        file_search_store_name=store.name,
+        file_search_store_name=store_name,
         file_name=file_name,
     )
 
-    op_name = getattr(op, "name", op)
+    op_name = _get_name(op)
     for _ in range(60):
         current = client.operations.get(op_name)
         if getattr(current, "done", False):
@@ -102,7 +112,7 @@ async def import_file(file_path: str, display_name: str = None) -> str:
             break
         await asyncio.sleep(3)
 
-    return store.name
+    return store_name
 
 # --- 3. Query ------------------------------------------------------------
 @mcp.tool()
