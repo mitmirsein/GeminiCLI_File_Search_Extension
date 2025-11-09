@@ -4,6 +4,7 @@ from mcp.server.fastmcp import FastMCP
 from google import genai
 from google.genai import types
 
+# --- Setup --------------------------------------------------------------
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("GeminiFileSearchMCP")
@@ -36,15 +37,28 @@ def _safe_mime(path: str) -> str:
     if ext == ".pdf": return "application/pdf"
     return "application/octet-stream"
 
+async def _wait_for_op(op_name: str):
+    """Polls operation until completion (string-safe)."""
+    op_id = _get_name(op_name)
+    for _ in range(60):
+        current = client.operations.get(_get_name(op_id))
+        if isinstance(current, dict) and current.get("done"):
+            return current
+        if getattr(current, "done", False):
+            return current
+        await asyncio.sleep(3)
+    raise TimeoutError("File Search operation timed out after 3 minutes.")
+
 # --- 1. Upload and index -------------------------------------------------
 @mcp.tool()
 async def upload_and_index(file_path: str, display_name: str = None) -> str:
+    """Direct upload and index of a file (PDF, JSON, TXT, etc.) into a new File Search Store."""
     if not os.path.exists(file_path):
         raise FileNotFoundError(file_path)
 
     mime_type = _safe_mime(file_path)
     if mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-        raise ValueError("❌ DOCX is not yet supported by File Search. Please convert to PDF first.")
+        raise ValueError("❌ DOCX not supported by File Search. Convert to PDF first.")
 
     display_name = display_name or os.path.basename(file_path)
     logger.info(f"📂 Uploading {display_name} ({mime_type})")
@@ -65,19 +79,14 @@ async def upload_and_index(file_path: str, display_name: str = None) -> str:
         },
     )
 
-    op_name = _get_name(op)
-    for _ in range(60):
-        current = client.operations.get(op_name)
-        if getattr(current, "done", False):
-            logger.info("✅ Upload and indexing complete.")
-            break
-        await asyncio.sleep(3)
-
+    await _wait_for_op(op)
+    logger.info("✅ Upload and indexing complete.")
     return store_name
 
 # --- 2. Import via Files API --------------------------------------------
 @mcp.tool()
 async def import_file(file_path: str, display_name: str = None) -> str:
+    """Upload via Files API, then import into a new File Search Store."""
     if not os.path.exists(file_path):
         raise FileNotFoundError(file_path)
 
@@ -104,21 +113,17 @@ async def import_file(file_path: str, display_name: str = None) -> str:
         file_name=file_name,
     )
 
-    op_name = _get_name(op)
-    for _ in range(60):
-        current = client.operations.get(op_name)
-        if getattr(current, "done", False):
-            logger.info("✅ File imported and indexed.")
-            break
-        await asyncio.sleep(3)
-
+    await _wait_for_op(op)
+    logger.info("✅ File imported and indexed.")
     return store_name
 
 # --- 3. Query ------------------------------------------------------------
 @mcp.tool()
 async def query_file_search(store_name: str, question: str) -> dict:
+    """Ask Gemini a question grounded in an uploaded File Search store."""
     if not store_name or not question:
         raise ValueError("Missing store_name or question.")
+
     loop = asyncio.get_event_loop()
     resp = await loop.run_in_executor(
         None,
@@ -130,6 +135,7 @@ async def query_file_search(store_name: str, question: str) -> dict:
             ),
         ),
     )
+
     grounding = getattr(resp.candidates[0], "grounding_metadata", None)
     sources = [c.retrieved_context.title for c in getattr(grounding, "grounding_chunks", [])]
     return {"answer": resp.text, "sources": sources, "store": store_name}
@@ -150,6 +156,7 @@ async def delete_store(store_name: str, force: bool = False) -> str:
     client.file_search_stores.delete(name=store_name, config={"force": force})
     return f"🗑️ Deleted File Search Store: {store_name} (force={force})"
 
+# --- Entry --------------------------------------------------------------
 if __name__ == "__main__":
     logger.info("🚀 Starting Gemini File Search MCP Server...")
     mcp.run()
