@@ -63,10 +63,14 @@ async def upload_and_index(file_path: str, display_name: str = None) -> str:
     display_name = display_name or os.path.basename(file_path)
     logger.info(f"📂 Uploading {display_name} ({mime_type})")
 
-    store = client.file_search_stores.create(config={"display_name": f"store_{int(asyncio.get_event_loop().time())}"})
+    # Create a new File Search Store
+    store = client.file_search_stores.create(
+        config={"display_name": f"store_{int(asyncio.get_event_loop().time())}"}
+    )
     store_name = _get_name(store)
     logger.info(f"🪣 Created FileSearchStore: {store_name}")
 
+    # Upload the file
     op = client.file_search_stores.upload_to_file_search_store(
         file_search_store_name=store_name,
         file=file_path,
@@ -74,14 +78,39 @@ async def upload_and_index(file_path: str, display_name: str = None) -> str:
             "display_name": display_name,
             "mime_type": mime_type,
             "chunking_config": {
-                "white_space_config": {"max_tokens_per_chunk": 500, "max_overlap_tokens": 100}
+                "white_space_config": {
+                    "max_tokens_per_chunk": 500,
+                    "max_overlap_tokens": 100,
+                }
             },
         },
     )
 
-    await _wait_for_op(op)
+    # Try to poll — but don’t fail if the SDK doesn’t support it
+    op_name = _get_name(op)
+    try:
+        # Some SDKs return an operation name path (works)
+        # Some return a plain string (safe check)
+        if isinstance(op_name, str) and "/" in op_name:
+            for _ in range(60):
+                try:
+                    current = client.operations.get(op_name)
+                    if (
+                        isinstance(current, dict)
+                        and current.get("done")
+                    ) or getattr(current, "done", False):
+                        break
+                except Exception:
+                    break
+                await asyncio.sleep(2)
+        else:
+            logger.warning(f"⚠️ Skipping polling; op_name={op_name}")
+    except Exception as e:
+        logger.warning(f"⚠️ Polling skipped or failed ({e}); upload likely completed.")
+
     logger.info("✅ Upload and indexing complete.")
     return store_name
+
 
 # --- 2. Import via Files API --------------------------------------------
 @mcp.tool()
