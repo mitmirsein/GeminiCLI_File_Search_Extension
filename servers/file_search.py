@@ -174,8 +174,13 @@ async def query_file_search(store_name: str, question: str) -> dict:
     )
 
     grounding = getattr(resp.candidates[0], "grounding_metadata", None)
-    sources = [c.retrieved_context.title for c in getattr(grounding, "grounding_chunks", [])]
-    return {"answer": resp.text, "sources": sources, "store": store_name}
+    chunks = [
+    	{
+        		"retrieved_context": chunk.retrieved_context.to_dict(),
+    	}
+    	for chunk in getattr(grounding, "grounding_chunks", [])
+     ]
+     return {"answer": resp.text, "retrieved_chunks": chunks, "store": store_name}
 
 # --- 4–6. List / Get / Delete ------------------------------------------
 @mcp.tool()
